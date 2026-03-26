@@ -5,6 +5,35 @@ import { JituCompletionProvider } from "./completionProvider";
 import { StatusBar } from "./statusBar";
 import { Logger } from "./logger";
 
+const COPILOT_EXTENSION_IDS = [
+  "github.copilot",
+  "github.copilot-chat",
+];
+
+async function checkCopilotConflict(): Promise<void> {
+  const activeCopilot = COPILOT_EXTENSION_IDS.find((id) => {
+    const ext = vscode.extensions.getExtension(id);
+    return ext?.isActive;
+  });
+
+  if (!activeCopilot) {
+    return;
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    "GitHub Copilot is active and may conflict with Jitu's inline completions. Disable Copilot for the best experience.",
+    "Open Extensions",
+    "Ignore",
+  );
+
+  if (choice === "Open Extensions") {
+    vscode.commands.executeCommand(
+      "workbench.extensions.search",
+      "@installed copilot",
+    );
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   const logger = new Logger();
   logger.info("Extension activating...");
@@ -18,20 +47,17 @@ export function activate(context: vscode.ExtensionContext) {
   const client = new HttpCompletionClient(config.endpoint, config.apiKey, logger);
   const provider = new JituCompletionProvider(client, statusBar);
 
-  // Register inline completion provider for all files
   const providerDisposable = vscode.languages.registerInlineCompletionItemProvider(
     { pattern: "**" },
     provider,
   );
 
-  // Toggle command
   const toggleDisposable = vscode.commands.registerCommand("jitu.toggle", () => {
     const current = vscode.workspace.getConfiguration("jitu");
     const enabled = !current.get<boolean>("enabled", true);
     current.update("enabled", enabled, vscode.ConfigurationTarget.Global);
   });
 
-  // Manual trigger command
   const triggerDisposable = vscode.commands.registerCommand(
     "jitu.triggerCompletion",
     () => {
@@ -39,7 +65,6 @@ export function activate(context: vscode.ExtensionContext) {
     },
   );
 
-  // React to config changes
   const configDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("jitu")) {
       const updated = getConfig();
@@ -61,6 +86,8 @@ export function activate(context: vscode.ExtensionContext) {
     logger,
     { dispose: () => provider.dispose() },
   );
+
+  checkCopilotConflict();
 }
 
 export function deactivate() {}

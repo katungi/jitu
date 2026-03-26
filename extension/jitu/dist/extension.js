@@ -117,7 +117,7 @@ var vscode3 = __toESM(require("vscode"));
 
 // src/promptBuilder.ts
 var vscode2 = __toESM(require("vscode"));
-var EDITABLE_REGION_LINES = 5;
+var EDITABLE_REGION_LINES = 12;
 function buildPromptContext(document, position, contextLines) {
   const totalLines = document.lineCount;
   const cursorLine = position.line;
@@ -144,64 +144,83 @@ function buildPromptContext(document, position, contextLines) {
     }
   }
   const editableRegion = editableLines.join("\n");
+  const diagnostics = buildDiagnosticContext(document.uri, cursorLine);
   const workspaceFolder = vscode2.workspace.getWorkspaceFolder(document.uri);
   const filePath = workspaceFolder ? vscode2.workspace.asRelativePath(document.uri) : document.uri.fsPath;
-  return { prefix, suffix, editableRegion, filePath };
+  return {
+    prefix,
+    suffix,
+    editableRegion,
+    filePath,
+    editStartLine: editStart,
+    editEndLine: editEnd,
+    diagnostics
+  };
+}
+function buildDiagnosticContext(uri, cursorLine) {
+  const diagnostics = vscode2.languages.getDiagnostics(uri);
+  const nearby = diagnostics.filter(
+    (d) => Math.abs(d.range.start.line - cursorLine) < 15 && (d.severity === vscode2.DiagnosticSeverity.Error || d.severity === vscode2.DiagnosticSeverity.Warning)
+  ).map((d) => `// ${d.severity === vscode2.DiagnosticSeverity.Error ? "Error" : "Warning"} line ${d.range.start.line + 1}: ${d.message}`);
+  return nearby.join("\n");
 }
 function buildPrompt(ctx) {
-  return `<[fim-suffix]>
-${ctx.suffix}<[fim-prefix]><filename>${ctx.filePath}
+  let prompt = `<[fim-suffix]>
+${ctx.suffix}<[fim-prefix]>`;
+  if (ctx.diagnostics) {
+    prompt += `<filename>diagnostics
+${ctx.diagnostics}
+
+`;
+  }
+  prompt += `<filename>${ctx.filePath}
 ${ctx.prefix}<<<<<<< CURRENT
 ${ctx.editableRegion}
 =======
 <[fim-middle]>`;
+  return prompt;
 }
 
 // src/responseParser.ts
-function parseResponse(modelOutput, originalEditableRegion) {
+function cleanModelOutput(modelOutput) {
   let cleaned = modelOutput;
   const updatedIdx = cleaned.indexOf(">>>>>>> UPDATED");
   if (updatedIdx !== -1) {
     cleaned = cleaned.slice(0, updatedIdx);
   }
-  cleaned = cleaned.trimEnd();
-  const originalClean = originalEditableRegion.replace("<|user_cursor|>", "").trimEnd();
+  cleaned = cleaned.replaceAll("<|user_cursor|>", "");
+  return cleaned.trimEnd();
+}
+function extractEditPrediction(modelOutput, originalEditableRegion) {
+  const cursorMarker = "<|user_cursor|>";
+  const cleaned = cleanModelOutput(modelOutput);
+  const originalClean = originalEditableRegion.replace(cursorMarker, "").trimEnd();
   if (cleaned === originalClean) {
     return null;
   }
-  return cleaned;
-}
-function extractInlineCompletion(modelOutput, originalEditableRegion) {
-  const cursorMarker = "<|user_cursor|>";
   const cursorIdx = originalEditableRegion.indexOf(cursorMarker);
   if (cursorIdx === -1) {
-    return parseResponse(modelOutput, originalEditableRegion);
+    return { text: cleaned, isEdit: true };
   }
   const beforeCursor = originalEditableRegion.slice(0, cursorIdx);
-  const afterCursor = originalEditableRegion.slice(cursorIdx + cursorMarker.length);
-  let cleaned = modelOutput;
-  const updatedIdx = cleaned.indexOf(">>>>>>> UPDATED");
-  if (updatedIdx !== -1) {
-    cleaned = cleaned.slice(0, updatedIdx);
+  const afterCursor = originalEditableRegion.slice(
+    cursorIdx + cursorMarker.length
+  );
+  if (cleaned.startsWith(beforeCursor)) {
+    const modelAfterPrefix = cleaned.slice(beforeCursor.length);
+    const afterTrimmed = afterCursor.trimEnd();
+    if (afterTrimmed.length > 0 && modelAfterPrefix.endsWith(afterTrimmed)) {
+      const inserted = modelAfterPrefix.slice(
+        0,
+        modelAfterPrefix.length - afterTrimmed.length
+      );
+      if (inserted) {
+        return { text: inserted, isEdit: false };
+      }
+      return null;
+    }
   }
-  cleaned = cleaned.trimEnd();
-  const originalClean = (beforeCursor + afterCursor).trimEnd();
-  if (cleaned === originalClean) {
-    return null;
-  }
-  if (!cleaned.startsWith(beforeCursor)) {
-    return cleaned;
-  }
-  const modelAfterPrefix = cleaned.slice(beforeCursor.length);
-  const afterTrimmed = afterCursor.trimEnd();
-  if (modelAfterPrefix.endsWith(afterTrimmed) && afterTrimmed.length > 0) {
-    const inserted = modelAfterPrefix.slice(
-      0,
-      modelAfterPrefix.length - afterTrimmed.length
-    );
-    return inserted || null;
-  }
-  return modelAfterPrefix || null;
+  return { text: cleaned, isEdit: true };
 }
 
 // src/completionProvider.ts
@@ -218,8 +237,43 @@ var JituCompletionProvider = class {
   constructor(client, statusBar) {
     this.client = client;
     this.statusBar = statusBar;
+    this.diagnosticsDisposable = vscode3.languages.onDidChangeDiagnostics(
+      (e) => {
+        const editor = vscode3.window.activeTextEditor;
+        if (!editor) {
+          return;
+        }
+        const config = getConfig();
+        if (!config.enabled || config.triggerMode === "manual") {
+          return;
+        }
+        const docUri = editor.document.uri;
+        const affected = e.uris.some((uri) => uri.toString() === docUri.toString());
+        if (!affected) {
+          return;
+        }
+        if (this.diagnosticsDebounce) {
+          clearTimeout(this.diagnosticsDebounce);
+        }
+        this.diagnosticsDebounce = setTimeout(() => {
+          this.diagnosticsDebounce = null;
+          const cursorLine = editor.selection.active.line;
+          const diagnostics = vscode3.languages.getDiagnostics(docUri);
+          const hasNearby = diagnostics.some(
+            (d) => Math.abs(d.range.start.line - cursorLine) < 15 && d.severity === vscode3.DiagnosticSeverity.Error
+          );
+          if (hasNearby) {
+            vscode3.commands.executeCommand(
+              "editor.action.inlineSuggest.trigger"
+            );
+          }
+        }, 200);
+      }
+    );
   }
   debounceTimer = null;
+  diagnosticsDebounce = null;
+  diagnosticsDisposable = null;
   async provideInlineCompletionItems(document, position, _context, token) {
     const config = getConfig();
     if (!config.enabled) {
@@ -244,7 +298,11 @@ var JituCompletionProvider = class {
     if (token.isCancellationRequested) {
       return void 0;
     }
-    const promptCtx = buildPromptContext(document, position, config.contextLines);
+    const promptCtx = buildPromptContext(
+      document,
+      position,
+      config.contextLines
+    );
     const prompt = buildPrompt(promptCtx);
     const options = {
       model: config.model,
@@ -259,20 +317,26 @@ var JituCompletionProvider = class {
         this.statusBar.setIdle();
         return void 0;
       }
-      const completion = extractInlineCompletion(
+      const prediction = extractEditPrediction(
         rawResponse,
         promptCtx.editableRegion
       );
       this.statusBar.setIdle();
-      if (!completion) {
+      if (!prediction) {
         return void 0;
       }
-      return [
-        new vscode3.InlineCompletionItem(
-          completion,
-          new vscode3.Range(position, position)
-        )
-      ];
+      let range;
+      if (prediction.isEdit) {
+        const endLine = promptCtx.editEndLine;
+        const endLineLength = document.lineAt(endLine).text.length;
+        range = new vscode3.Range(
+          new vscode3.Position(promptCtx.editStartLine, 0),
+          new vscode3.Position(endLine, endLineLength)
+        );
+      } else {
+        range = new vscode3.Range(position, position);
+      }
+      return [new vscode3.InlineCompletionItem(prediction.text, range)];
     } catch (err) {
       this.statusBar.setIdle();
       if (err instanceof Error && err.name === "AbortError") {
@@ -305,6 +369,12 @@ var JituCompletionProvider = class {
   dispose() {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
+    }
+    if (this.diagnosticsDebounce) {
+      clearTimeout(this.diagnosticsDebounce);
+    }
+    if (this.diagnosticsDisposable) {
+      this.diagnosticsDisposable.dispose();
     }
     this.client.dispose();
   }
@@ -363,6 +433,30 @@ var Logger = class {
 };
 
 // src/extension.ts
+var COPILOT_EXTENSION_IDS = [
+  "github.copilot",
+  "github.copilot-chat"
+];
+async function checkCopilotConflict() {
+  const activeCopilot = COPILOT_EXTENSION_IDS.find((id) => {
+    const ext = vscode6.extensions.getExtension(id);
+    return ext?.isActive;
+  });
+  if (!activeCopilot) {
+    return;
+  }
+  const choice = await vscode6.window.showWarningMessage(
+    "GitHub Copilot is active and may conflict with Jitu's inline completions. Disable Copilot for the best experience.",
+    "Open Extensions",
+    "Ignore"
+  );
+  if (choice === "Open Extensions") {
+    vscode6.commands.executeCommand(
+      "workbench.extensions.search",
+      "@installed copilot"
+    );
+  }
+}
 function activate(context) {
   const logger = new Logger();
   logger.info("Extension activating...");
@@ -408,6 +502,7 @@ function activate(context) {
     logger,
     { dispose: () => provider.dispose() }
   );
+  checkCopilotConflict();
 }
 function deactivate() {
 }

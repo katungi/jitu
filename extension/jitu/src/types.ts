@@ -35,4 +35,7 @@ export interface PromptContext {
   suffix: string;
   editableRegion: string;
   filePath: string;
+  editStartLine: number;
+  editEndLine: number;
+  diagnostics: string;
 }
