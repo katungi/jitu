@@ -19,7 +19,7 @@ export class StatusBar {
   }
 
   setLoading(): void {
-    this.item.text = "$(loading~spin) Jitu";
+    this.item.text = "$(sync~spin) Jitu";
     this.item.tooltip = "Jitu - Fetching completion...";
   }
 

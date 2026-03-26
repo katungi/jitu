@@ -34,7 +34,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode5 = __toESM(require("vscode"));
+var vscode6 = __toESM(require("vscode"));
 
 // src/config.ts
 var vscode = __toESM(require("vscode"));
@@ -55,9 +55,10 @@ function getConfig() {
 
 // src/httpClient.ts
 var HttpCompletionClient = class {
-  constructor(endpoint, apiKey) {
+  constructor(endpoint, apiKey, logger) {
     this.endpoint = endpoint;
     this.apiKey = apiKey;
+    this.logger = logger;
   }
   abortController = null;
   async complete(prompt, options) {
@@ -77,18 +78,24 @@ var HttpCompletionClient = class {
       temperature: options.temperature,
       stop: options.stop
     });
+    this.logger?.info(`POST ${url} (model=${options.model}, maxTokens=${options.maxTokens})`);
+    const start = Date.now();
     const response = await fetch(url, {
       method: "POST",
       headers,
       body,
       signal: this.abortController.signal
     });
+    const elapsed = Date.now() - start;
     if (!response.ok) {
       const text = await response.text();
+      this.logger?.error(`Response ${response.status} (${elapsed}ms): ${text}`);
       throw new Error(`API request failed (${response.status}): ${text}`);
     }
     const data = await response.json();
-    return data.choices?.[0]?.text ?? "";
+    const completion = data.choices?.[0]?.text ?? "";
+    this.logger?.info(`Response 200 (${elapsed}ms): ${completion.length} chars`);
+    return completion;
   }
   cancel() {
     if (this.abortController) {
@@ -321,7 +328,7 @@ var StatusBar = class {
     this.item.tooltip = "Jitu - Click to toggle";
   }
   setLoading() {
-    this.item.text = "$(loading~spin) Jitu";
+    this.item.text = "$(sync~spin) Jitu";
     this.item.tooltip = "Jitu - Fetching completion...";
   }
   setDisabled() {
@@ -337,31 +344,51 @@ var StatusBar = class {
   }
 };
 
+// src/logger.ts
+var vscode5 = __toESM(require("vscode"));
+var Logger = class {
+  channel;
+  constructor() {
+    this.channel = vscode5.window.createOutputChannel("Jitu");
+  }
+  info(msg) {
+    this.channel.appendLine(`[INFO] ${(/* @__PURE__ */ new Date()).toISOString()} - ${msg}`);
+  }
+  error(msg) {
+    this.channel.appendLine(`[ERROR] ${(/* @__PURE__ */ new Date()).toISOString()} - ${msg}`);
+  }
+  dispose() {
+    this.channel.dispose();
+  }
+};
+
 // src/extension.ts
 function activate(context) {
+  const logger = new Logger();
+  logger.info("Extension activating...");
   const config = getConfig();
   const statusBar = new StatusBar();
   if (!config.enabled) {
     statusBar.setDisabled();
   }
-  const client = new HttpCompletionClient(config.endpoint, config.apiKey);
+  const client = new HttpCompletionClient(config.endpoint, config.apiKey, logger);
   const provider = new JituCompletionProvider(client, statusBar);
-  const providerDisposable = vscode5.languages.registerInlineCompletionItemProvider(
+  const providerDisposable = vscode6.languages.registerInlineCompletionItemProvider(
     { pattern: "**" },
     provider
   );
-  const toggleDisposable = vscode5.commands.registerCommand("jitu.toggle", () => {
-    const current = vscode5.workspace.getConfiguration("jitu");
+  const toggleDisposable = vscode6.commands.registerCommand("jitu.toggle", () => {
+    const current = vscode6.workspace.getConfiguration("jitu");
     const enabled = !current.get("enabled", true);
-    current.update("enabled", enabled, vscode5.ConfigurationTarget.Global);
+    current.update("enabled", enabled, vscode6.ConfigurationTarget.Global);
   });
-  const triggerDisposable = vscode5.commands.registerCommand(
+  const triggerDisposable = vscode6.commands.registerCommand(
     "jitu.triggerCompletion",
     () => {
-      vscode5.commands.executeCommand("editor.action.inlineSuggest.trigger");
+      vscode6.commands.executeCommand("editor.action.inlineSuggest.trigger");
     }
   );
-  const configDisposable = vscode5.workspace.onDidChangeConfiguration((e) => {
+  const configDisposable = vscode6.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("jitu")) {
       const updated = getConfig();
       client.updateConfig(updated.endpoint, updated.apiKey);
@@ -378,6 +405,7 @@ function activate(context) {
     triggerDisposable,
     configDisposable,
     statusBar,
+    logger,
     { dispose: () => provider.dispose() }
   );
 }

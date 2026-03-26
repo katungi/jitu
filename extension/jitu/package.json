@@ -2,9 +2,10 @@
   "name": "jitu",
   "displayName": "Jitu - AI Tab Completion",
   "description": "Open source AI edit prediction powered by Zeta 2",
+  "publisher": "jitu",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.110.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Programming Languages",
@@ -30,7 +31,7 @@
       "properties": {
         "jitu.endpoint": {
           "type": "string",
-          "default": "https://katungi--zeta2-edit-prediction-serve.modal.run/v1",
+          "default": "https://katungi--zeta2-edit-prediction-serve.modal.run",
           "description": "API endpoint URL. Falls back to JITU_ENDPOINT env var."
         },
         "jitu.apiKey": {
@@ -98,7 +99,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.110.0",
+    "@types/vscode": "^1.95.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.56.1",

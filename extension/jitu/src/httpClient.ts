@@ -1,4 +1,5 @@
 import { CompletionClient, CompletionOptions, CompletionResponse } from "./types";
+import { Logger } from "./logger";
 
 export class HttpCompletionClient implements CompletionClient {
   private abortController: AbortController | null = null;
@@ -6,6 +7,7 @@ export class HttpCompletionClient implements CompletionClient {
   constructor(
     private endpoint: string,
     private apiKey: string,
+    private logger?: Logger,
   ) {}
 
   async complete(prompt: string, options: CompletionOptions): Promise<string> {
@@ -28,6 +30,9 @@ export class HttpCompletionClient implements CompletionClient {
       stop: options.stop,
     });
 
+    this.logger?.info(`POST ${url} (model=${options.model}, maxTokens=${options.maxTokens})`);
+    const start = Date.now();
+
     const response = await fetch(url, {
       method: "POST",
       headers,
@@ -35,13 +40,18 @@ export class HttpCompletionClient implements CompletionClient {
       signal: this.abortController.signal,
     });
 
+    const elapsed = Date.now() - start;
+
     if (!response.ok) {
       const text = await response.text();
+      this.logger?.error(`Response ${response.status} (${elapsed}ms): ${text}`);
       throw new Error(`API request failed (${response.status}): ${text}`);
     }
 
     const data = (await response.json()) as CompletionResponse;
-    return data.choices?.[0]?.text ?? "";
+    const completion = data.choices?.[0]?.text ?? "";
+    this.logger?.info(`Response 200 (${elapsed}ms): ${completion.length} chars`);
+    return completion;
   }
 
   cancel(): void {

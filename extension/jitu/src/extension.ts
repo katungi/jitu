@@ -3,8 +3,11 @@ import { getConfig } from "./config";
 import { HttpCompletionClient } from "./httpClient";
 import { JituCompletionProvider } from "./completionProvider";
 import { StatusBar } from "./statusBar";
+import { Logger } from "./logger";
 
 export function activate(context: vscode.ExtensionContext) {
+  const logger = new Logger();
+  logger.info("Extension activating...");
   const config = getConfig();
 
   const statusBar = new StatusBar();
@@ -12,7 +15,7 @@ export function activate(context: vscode.ExtensionContext) {
     statusBar.setDisabled();
   }
 
-  const client = new HttpCompletionClient(config.endpoint, config.apiKey);
+  const client = new HttpCompletionClient(config.endpoint, config.apiKey, logger);
   const provider = new JituCompletionProvider(client, statusBar);
 
   // Register inline completion provider for all files
@@ -55,6 +58,7 @@ export function activate(context: vscode.ExtensionContext) {
     triggerDisposable,
     configDisposable,
     statusBar,
+    logger,
     { dispose: () => provider.dispose() },
   );
 }
