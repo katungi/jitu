@@ -30,7 +30,7 @@
       "properties": {
         "jitu.endpoint": {
           "type": "string",
-          "default": "",
+          "default": "https://katungi--zeta2-edit-prediction-serve.modal.run/v1",
           "description": "API endpoint URL. Falls back to JITU_ENDPOINT env var."
         },
         "jitu.apiKey": {
