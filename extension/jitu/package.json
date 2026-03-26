@@ -1,21 +1,85 @@
 {
   "name": "jitu",
-  "displayName": "jitu",
-  "description": "fast, cheap, quality tab completion",
+  "displayName": "Jitu - AI Tab Completion",
+  "description": "Open source AI edit prediction powered by Zeta 2",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.110.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Machine Learning"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "jitu.helloWorld",
-        "title": "Hello World"
+        "command": "jitu.toggle",
+        "title": "Jitu: Toggle"
+      },
+      {
+        "command": "jitu.triggerCompletion",
+        "title": "Jitu: Trigger Completion"
+      }
+    ],
+    "configuration": {
+      "title": "Jitu",
+      "properties": {
+        "jitu.endpoint": {
+          "type": "string",
+          "default": "",
+          "description": "API endpoint URL. Falls back to JITU_ENDPOINT env var."
+        },
+        "jitu.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for hosted mode"
+        },
+        "jitu.model": {
+          "type": "string",
+          "default": "zeta-2",
+          "description": "Model name"
+        },
+        "jitu.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Jitu completions"
+        },
+        "jitu.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "Debounce delay in milliseconds"
+        },
+        "jitu.maxTokens": {
+          "type": "number",
+          "default": 128,
+          "description": "Max tokens per completion"
+        },
+        "jitu.triggerMode": {
+          "type": "string",
+          "enum": [
+            "onPause",
+            "always",
+            "manual"
+          ],
+          "default": "onPause",
+          "description": "When to trigger completions"
+        },
+        "jitu.contextLines": {
+          "type": "number",
+          "default": 100,
+          "description": "Lines of context to include before/after cursor"
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "jitu.triggerCompletion",
+        "key": "alt+\\",
+        "when": "editorTextFocus"
       }
     ]
   },

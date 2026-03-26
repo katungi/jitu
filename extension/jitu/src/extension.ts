@@ -1,26 +1,62 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
+import { getConfig } from "./config";
+import { HttpCompletionClient } from "./httpClient";
+import { JituCompletionProvider } from "./completionProvider";
+import { StatusBar } from "./statusBar";
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+  const config = getConfig();
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "jitu" is now active!');
+  const statusBar = new StatusBar();
+  if (!config.enabled) {
+    statusBar.setDisabled();
+  }
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('jitu.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from jitu!');
-	});
+  const client = new HttpCompletionClient(config.endpoint, config.apiKey);
+  const provider = new JituCompletionProvider(client, statusBar);
 
-	context.subscriptions.push(disposable);
+  // Register inline completion provider for all files
+  const providerDisposable = vscode.languages.registerInlineCompletionItemProvider(
+    { pattern: "**" },
+    provider,
+  );
+
+  // Toggle command
+  const toggleDisposable = vscode.commands.registerCommand("jitu.toggle", () => {
+    const current = vscode.workspace.getConfiguration("jitu");
+    const enabled = !current.get<boolean>("enabled", true);
+    current.update("enabled", enabled, vscode.ConfigurationTarget.Global);
+  });
+
+  // Manual trigger command
+  const triggerDisposable = vscode.commands.registerCommand(
+    "jitu.triggerCompletion",
+    () => {
+      vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
+    },
+  );
+
+  // React to config changes
+  const configDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("jitu")) {
+      const updated = getConfig();
+      client.updateConfig(updated.endpoint, updated.apiKey);
+      if (updated.enabled) {
+        statusBar.setIdle();
+      } else {
+        statusBar.setDisabled();
+      }
+    }
+  });
+
+  context.subscriptions.push(
+    providerDisposable,
+    toggleDisposable,
+    triggerDisposable,
+    configDisposable,
+    statusBar,
+    { dispose: () => provider.dispose() },
+  );
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {}
