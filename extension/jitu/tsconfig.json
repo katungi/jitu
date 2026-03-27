@@ -6,7 +6,9 @@
 			"ES2022"
 		],
 		"types": [
-			"node"
+			"node",
+			"mocha",
+			"vscode"
 		],
 		"sourceMap": true,
 		"rootDir": "src",

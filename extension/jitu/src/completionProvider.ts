@@ -111,43 +111,62 @@ export class JituCompletionProvider
       maxTokens: config.maxTokens,
       stop: [">>>>>>> UPDATED"],
       temperature: 0,
+      candidateCount: config.candidateCount,
     };
 
     this.statusBar.setLoading();
 
     try {
-      const rawResponse = await this.client.complete(prompt, options);
+      const rawResponses = await this.client.complete(prompt, options);
 
       if (token.isCancellationRequested) {
         this.statusBar.setIdle();
         return undefined;
       }
 
-      const prediction = extractEditPrediction(
-        rawResponse,
-        promptCtx.editableRegion,
-      );
-
       this.statusBar.setIdle();
 
-      if (!prediction) {
+      const predictions = rawResponses
+        .map((rawResponse) =>
+          extractEditPrediction(rawResponse, promptCtx.editableRegion),
+        )
+        .filter((prediction): prediction is NonNullable<typeof prediction> => Boolean(prediction));
+
+      if (predictions.length === 0) {
         return undefined;
       }
 
-      let range: vscode.Range;
+      const uniquePredictions: Array<{ text: string; isEdit: boolean }> = [];
+      const seen = new Set<string>();
 
-      if (prediction.isEdit) {
+      for (const prediction of predictions) {
+        const key = `${prediction.isEdit ? "edit" : "insert"}:${prediction.text}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        uniquePredictions.push(prediction);
+      }
+
+      if (uniquePredictions.length === 0) {
+        return undefined;
+      }
+
+      const editRange = (() => {
         const endLine = promptCtx.editEndLine;
         const endLineLength = document.lineAt(endLine).text.length;
-        range = new vscode.Range(
+        return new vscode.Range(
           new vscode.Position(promptCtx.editStartLine, 0),
           new vscode.Position(endLine, endLineLength),
         );
-      } else {
-        range = new vscode.Range(position, position);
-      }
+      })();
 
-      return [new vscode.InlineCompletionItem(prediction.text, range)];
+      const insertRange = new vscode.Range(position, position);
+
+      return uniquePredictions.map((prediction) => {
+        const range = prediction.isEdit ? editRange : insertRange;
+        return new vscode.InlineCompletionItem(prediction.text, range);
+      });
     } catch (err: unknown) {
       this.statusBar.setIdle();
       if (err instanceof Error && err.name === "AbortError") {

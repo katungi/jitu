@@ -62,9 +62,10 @@ All settings are available under `jitu.*` in VS Code settings:
 | `jitu.apiKey` | — | Optional Bearer token for authentication |
 | `jitu.enabled` | `true` | Enable or disable completions |
 | `jitu.triggerMode` | `onPause` | When to trigger: `onPause`, `always`, or `manual` |
-| `jitu.debounceMs` | `300` | Delay in ms before fetching suggestions |
-| `jitu.maxTokens` | `128` | Maximum tokens per completion |
-| `jitu.contextLines` | `100` | Lines of surrounding context sent to the model |
+| `jitu.debounceMs` | `120` | Delay in ms before fetching suggestions |
+| `jitu.maxTokens` | `64` | Maximum tokens per completion |
+| `jitu.candidateCount` | `3` | Suggestions fetched per request so next-candidate cycling is instant |
+| `jitu.contextLines` | `40` | Lines of surrounding context sent to the model (bounded near cursor) |
 | `jitu.model` | `zeta-2` | Model identifier sent to the API |
 
 ## Architecture

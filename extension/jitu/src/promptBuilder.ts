@@ -1,7 +1,10 @@
 import * as vscode from "vscode";
 import { PromptContext } from "./types";
 
-const EDITABLE_REGION_LINES = 12;
+const EDITABLE_REGION_LINES = 8;
+const MAX_PREFIX_CHARS = 3500;
+const MAX_SUFFIX_CHARS = 2500;
+const MAX_DIAGNOSTIC_ENTRIES = 6;
 
 export function buildPromptContext(
   document: vscode.TextDocument,
@@ -15,13 +18,19 @@ export function buildPromptContext(
   const editEnd = Math.min(totalLines - 1, cursorLine + EDITABLE_REGION_LINES);
 
   const prefixStart = Math.max(0, editStart - contextLines);
-  const prefix = document.getText(
-    new vscode.Range(prefixStart, 0, editStart, 0),
+  const prefix = buildBoundedPrefixContext(
+    document,
+    prefixStart,
+    editStart - 1,
+    MAX_PREFIX_CHARS,
   );
 
-  const suffixEnd = Math.min(totalLines, editEnd + 1 + contextLines);
-  const suffix = document.getText(
-    new vscode.Range(editEnd + 1, 0, suffixEnd, 0),
+  const suffixEnd = Math.min(totalLines - 1, editEnd + contextLines);
+  const suffix = buildBoundedSuffixContext(
+    document,
+    editEnd + 1,
+    suffixEnd,
+    MAX_SUFFIX_CHARS,
   );
 
   const editableLines: string[] = [];
@@ -56,6 +65,58 @@ export function buildPromptContext(
   };
 }
 
+function buildBoundedPrefixContext(
+  document: vscode.TextDocument,
+  startLine: number,
+  endLine: number,
+  maxChars: number,
+): string {
+  if (endLine < startLine) {
+    return "";
+  }
+
+  const lines: string[] = [];
+  let chars = 0;
+
+  for (let line = endLine; line >= startLine; line--) {
+    const content = document.lineAt(line).text;
+    const lineWithBreak = `${content}\n`;
+    if (chars + lineWithBreak.length > maxChars) {
+      break;
+    }
+    lines.unshift(content);
+    chars += lineWithBreak.length;
+  }
+
+  return lines.join("\n");
+}
+
+function buildBoundedSuffixContext(
+  document: vscode.TextDocument,
+  startLine: number,
+  endLine: number,
+  maxChars: number,
+): string {
+  if (endLine < startLine) {
+    return "";
+  }
+
+  const lines: string[] = [];
+  let chars = 0;
+
+  for (let line = startLine; line <= endLine; line++) {
+    const content = document.lineAt(line).text;
+    const lineWithBreak = `${content}\n`;
+    if (chars + lineWithBreak.length > maxChars) {
+      break;
+    }
+    lines.push(content);
+    chars += lineWithBreak.length;
+  }
+
+  return lines.join("\n");
+}
+
 function buildDiagnosticContext(uri: vscode.Uri, cursorLine: number): string {
   const diagnostics = vscode.languages.getDiagnostics(uri);
   const nearby = diagnostics
@@ -65,13 +126,17 @@ function buildDiagnosticContext(uri: vscode.Uri, cursorLine: number): string {
         (d.severity === vscode.DiagnosticSeverity.Error ||
           d.severity === vscode.DiagnosticSeverity.Warning),
     )
+    .slice(0, MAX_DIAGNOSTIC_ENTRIES)
     .map((d) => `// ${d.severity === vscode.DiagnosticSeverity.Error ? "Error" : "Warning"} line ${d.range.start.line + 1}: ${d.message}`);
 
   return nearby.join("\n");
 }
 
 export function buildPrompt(ctx: PromptContext): string {
-  let prompt = `<[fim-suffix]>\n${ctx.suffix}<[fim-prefix]>`;
+  const suffixBlock = ctx.suffix ? `${ctx.suffix}\n` : "";
+  const prefixBlock = ctx.prefix ? `${ctx.prefix}\n` : "";
+
+  let prompt = `<[fim-suffix]>\n${suffixBlock}<[fim-prefix]>`;
 
   if (ctx.diagnostics) {
     prompt += `<filename>diagnostics\n${ctx.diagnostics}\n\n`;
@@ -79,7 +144,7 @@ export function buildPrompt(ctx: PromptContext): string {
 
   prompt +=
     `<filename>${ctx.filePath}\n` +
-    `${ctx.prefix}` +
+    `${prefixBlock}` +
     `<<<<<<< CURRENT\n` +
     `${ctx.editableRegion}\n` +
     `=======\n` +

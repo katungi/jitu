@@ -51,13 +51,20 @@
         },
         "jitu.debounceMs": {
           "type": "number",
-          "default": 300,
+          "default": 120,
           "description": "Debounce delay in milliseconds"
         },
         "jitu.maxTokens": {
           "type": "number",
-          "default": 128,
+          "default": 64,
           "description": "Max tokens per completion"
+        },
+        "jitu.candidateCount": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Number of suggestions fetched per request for faster next-candidate cycling"
         },
         "jitu.triggerMode": {
           "type": "string",
@@ -71,7 +78,7 @@
         },
         "jitu.contextLines": {
           "type": "number",
-          "default": 100,
+          "default": 40,
           "description": "Lines of context to include before/after cursor"
         }
       }

@@ -41,15 +41,20 @@ var vscode = __toESM(require("vscode"));
 function getConfig() {
   const config = vscode.workspace.getConfiguration("jitu");
   const endpoint = config.get("endpoint", "") || process.env.JITU_ENDPOINT || "";
+  const candidateCount = Math.min(
+    5,
+    Math.max(1, config.get("candidateCount", 3))
+  );
   return {
     endpoint,
     apiKey: config.get("apiKey", ""),
     model: config.get("model", "zeta-2"),
     enabled: config.get("enabled", true),
-    debounceMs: config.get("debounceMs", 300),
-    maxTokens: config.get("maxTokens", 128),
+    debounceMs: config.get("debounceMs", 120),
+    maxTokens: config.get("maxTokens", 64),
+    candidateCount,
     triggerMode: config.get("triggerMode", "onPause"),
-    contextLines: config.get("contextLines", 100)
+    contextLines: config.get("contextLines", 40)
   };
 }
 
@@ -76,9 +81,12 @@ var HttpCompletionClient = class {
       prompt,
       max_tokens: options.maxTokens,
       temperature: options.temperature,
-      stop: options.stop
+      stop: options.stop,
+      n: options.candidateCount
     });
-    this.logger?.info(`POST ${url} (model=${options.model}, maxTokens=${options.maxTokens})`);
+    this.logger?.info(
+      `POST ${url} (model=${options.model}, maxTokens=${options.maxTokens}, n=${options.candidateCount}, promptChars=${prompt.length})`
+    );
     const start = Date.now();
     const response = await fetch(url, {
       method: "POST",
@@ -93,9 +101,14 @@ var HttpCompletionClient = class {
       throw new Error(`API request failed (${response.status}): ${text}`);
     }
     const data = await response.json();
-    const completion = data.choices?.[0]?.text ?? "";
-    this.logger?.info(`Response 200 (${elapsed}ms): ${completion.length} chars`);
-    return completion;
+    const choices = (data.choices ?? []).map((choice) => choice.text ?? "").filter((choice) => choice.length > 0);
+    this.logger?.info(
+      `Response 200 (${elapsed}ms): ${choices.length} choice(s)`
+    );
+    if (choices.length === 0) {
+      return [""];
+    }
+    return choices;
   }
   cancel() {
     if (this.abortController) {
@@ -117,19 +130,28 @@ var vscode3 = __toESM(require("vscode"));
 
 // src/promptBuilder.ts
 var vscode2 = __toESM(require("vscode"));
-var EDITABLE_REGION_LINES = 12;
+var EDITABLE_REGION_LINES = 8;
+var MAX_PREFIX_CHARS = 3500;
+var MAX_SUFFIX_CHARS = 2500;
+var MAX_DIAGNOSTIC_ENTRIES = 6;
 function buildPromptContext(document, position, contextLines) {
   const totalLines = document.lineCount;
   const cursorLine = position.line;
   const editStart = Math.max(0, cursorLine - EDITABLE_REGION_LINES);
   const editEnd = Math.min(totalLines - 1, cursorLine + EDITABLE_REGION_LINES);
   const prefixStart = Math.max(0, editStart - contextLines);
-  const prefix = document.getText(
-    new vscode2.Range(prefixStart, 0, editStart, 0)
+  const prefix = buildBoundedPrefixContext(
+    document,
+    prefixStart,
+    editStart - 1,
+    MAX_PREFIX_CHARS
   );
-  const suffixEnd = Math.min(totalLines, editEnd + 1 + contextLines);
-  const suffix = document.getText(
-    new vscode2.Range(editEnd + 1, 0, suffixEnd, 0)
+  const suffixEnd = Math.min(totalLines - 1, editEnd + contextLines);
+  const suffix = buildBoundedSuffixContext(
+    document,
+    editEnd + 1,
+    suffixEnd,
+    MAX_SUFFIX_CHARS
   );
   const editableLines = [];
   for (let i = editStart; i <= editEnd; i++) {
@@ -157,16 +179,56 @@ function buildPromptContext(document, position, contextLines) {
     diagnostics
   };
 }
+function buildBoundedPrefixContext(document, startLine, endLine, maxChars) {
+  if (endLine < startLine) {
+    return "";
+  }
+  const lines = [];
+  let chars = 0;
+  for (let line = endLine; line >= startLine; line--) {
+    const content = document.lineAt(line).text;
+    const lineWithBreak = `${content}
+`;
+    if (chars + lineWithBreak.length > maxChars) {
+      break;
+    }
+    lines.unshift(content);
+    chars += lineWithBreak.length;
+  }
+  return lines.join("\n");
+}
+function buildBoundedSuffixContext(document, startLine, endLine, maxChars) {
+  if (endLine < startLine) {
+    return "";
+  }
+  const lines = [];
+  let chars = 0;
+  for (let line = startLine; line <= endLine; line++) {
+    const content = document.lineAt(line).text;
+    const lineWithBreak = `${content}
+`;
+    if (chars + lineWithBreak.length > maxChars) {
+      break;
+    }
+    lines.push(content);
+    chars += lineWithBreak.length;
+  }
+  return lines.join("\n");
+}
 function buildDiagnosticContext(uri, cursorLine) {
   const diagnostics = vscode2.languages.getDiagnostics(uri);
   const nearby = diagnostics.filter(
     (d) => Math.abs(d.range.start.line - cursorLine) < 15 && (d.severity === vscode2.DiagnosticSeverity.Error || d.severity === vscode2.DiagnosticSeverity.Warning)
-  ).map((d) => `// ${d.severity === vscode2.DiagnosticSeverity.Error ? "Error" : "Warning"} line ${d.range.start.line + 1}: ${d.message}`);
+  ).slice(0, MAX_DIAGNOSTIC_ENTRIES).map((d) => `// ${d.severity === vscode2.DiagnosticSeverity.Error ? "Error" : "Warning"} line ${d.range.start.line + 1}: ${d.message}`);
   return nearby.join("\n");
 }
 function buildPrompt(ctx) {
+  const suffixBlock = ctx.suffix ? `${ctx.suffix}
+` : "";
+  const prefixBlock = ctx.prefix ? `${ctx.prefix}
+` : "";
   let prompt = `<[fim-suffix]>
-${ctx.suffix}<[fim-prefix]>`;
+${suffixBlock}<[fim-prefix]>`;
   if (ctx.diagnostics) {
     prompt += `<filename>diagnostics
 ${ctx.diagnostics}
@@ -174,7 +236,7 @@ ${ctx.diagnostics}
 `;
   }
   prompt += `<filename>${ctx.filePath}
-${ctx.prefix}<<<<<<< CURRENT
+${prefixBlock}<<<<<<< CURRENT
 ${ctx.editableRegion}
 =======
 <[fim-middle]>`;
@@ -308,35 +370,49 @@ var JituCompletionProvider = class {
       model: config.model,
       maxTokens: config.maxTokens,
       stop: [">>>>>>> UPDATED"],
-      temperature: 0
+      temperature: 0,
+      candidateCount: config.candidateCount
     };
     this.statusBar.setLoading();
     try {
-      const rawResponse = await this.client.complete(prompt, options);
+      const rawResponses = await this.client.complete(prompt, options);
       if (token.isCancellationRequested) {
         this.statusBar.setIdle();
         return void 0;
       }
-      const prediction = extractEditPrediction(
-        rawResponse,
-        promptCtx.editableRegion
-      );
       this.statusBar.setIdle();
-      if (!prediction) {
+      const predictions = rawResponses.map(
+        (rawResponse) => extractEditPrediction(rawResponse, promptCtx.editableRegion)
+      ).filter((prediction) => Boolean(prediction));
+      if (predictions.length === 0) {
         return void 0;
       }
-      let range;
-      if (prediction.isEdit) {
+      const uniquePredictions = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const prediction of predictions) {
+        const key = `${prediction.isEdit ? "edit" : "insert"}:${prediction.text}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        uniquePredictions.push(prediction);
+      }
+      if (uniquePredictions.length === 0) {
+        return void 0;
+      }
+      const editRange = (() => {
         const endLine = promptCtx.editEndLine;
         const endLineLength = document.lineAt(endLine).text.length;
-        range = new vscode3.Range(
+        return new vscode3.Range(
           new vscode3.Position(promptCtx.editStartLine, 0),
           new vscode3.Position(endLine, endLineLength)
         );
-      } else {
-        range = new vscode3.Range(position, position);
-      }
-      return [new vscode3.InlineCompletionItem(prediction.text, range)];
+      })();
+      const insertRange = new vscode3.Range(position, position);
+      return uniquePredictions.map((prediction) => {
+        const range = prediction.isEdit ? editRange : insertRange;
+        return new vscode3.InlineCompletionItem(prediction.text, range);
+      });
     } catch (err) {
       this.statusBar.setIdle();
       if (err instanceof Error && err.name === "AbortError") {

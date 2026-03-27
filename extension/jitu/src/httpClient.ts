@@ -10,7 +10,10 @@ export class HttpCompletionClient implements CompletionClient {
     private logger?: Logger,
   ) {}
 
-  async complete(prompt: string, options: CompletionOptions): Promise<string> {
+  async complete(
+    prompt: string,
+    options: CompletionOptions,
+  ): Promise<string[]> {
     this.cancel();
     this.abortController = new AbortController();
 
@@ -28,9 +31,12 @@ export class HttpCompletionClient implements CompletionClient {
       max_tokens: options.maxTokens,
       temperature: options.temperature,
       stop: options.stop,
+      n: options.candidateCount,
     });
 
-    this.logger?.info(`POST ${url} (model=${options.model}, maxTokens=${options.maxTokens})`);
+    this.logger?.info(
+      `POST ${url} (model=${options.model}, maxTokens=${options.maxTokens}, n=${options.candidateCount}, promptChars=${prompt.length})`,
+    );
     const start = Date.now();
 
     const response = await fetch(url, {
@@ -49,9 +55,19 @@ export class HttpCompletionClient implements CompletionClient {
     }
 
     const data = (await response.json()) as CompletionResponse;
-    const completion = data.choices?.[0]?.text ?? "";
-    this.logger?.info(`Response 200 (${elapsed}ms): ${completion.length} chars`);
-    return completion;
+    const choices = (data.choices ?? [])
+      .map((choice) => choice.text ?? "")
+      .filter((choice) => choice.length > 0);
+
+    this.logger?.info(
+      `Response 200 (${elapsed}ms): ${choices.length} choice(s)`,
+    );
+
+    if (choices.length === 0) {
+      return [""];
+    }
+
+    return choices;
   }
 
   cancel(): void {

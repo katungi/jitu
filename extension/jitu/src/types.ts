@@ -3,10 +3,11 @@ export interface CompletionOptions {
   maxTokens: number;
   stop: string[];
   temperature: number;
+  candidateCount: number;
 }
 
 export interface CompletionClient {
-  complete(prompt: string, options: CompletionOptions): Promise<string>;
+  complete(prompt: string, options: CompletionOptions): Promise<string[]>;
   cancel(): void;
   dispose(): void;
 }
@@ -26,6 +27,7 @@ export interface JituConfig {
   enabled: boolean;
   debounceMs: number;
   maxTokens: number;
+  candidateCount: number;
   triggerMode: "onPause" | "always" | "manual";
   contextLines: number;
 }
