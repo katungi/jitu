@@ -24,6 +24,14 @@
       {
         "command": "jitu.triggerCompletion",
         "title": "Jitu: Trigger Completion"
+      },
+      {
+        "command": "jitu.acceptDiff",
+        "title": "Jitu: Accept Pending Diff"
+      },
+      {
+        "command": "jitu.dismissDiff",
+        "title": "Jitu: Dismiss Pending Diff"
       }
     ],
     "configuration": {
@@ -88,6 +96,11 @@
         "command": "jitu.triggerCompletion",
         "key": "alt+\\",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "jitu.dismissDiff",
+        "key": "escape",
+        "when": "editorTextFocus && jitu.hasPendingDiff"
       }
     ]
   },

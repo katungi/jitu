@@ -4,6 +4,7 @@ import { HttpCompletionClient } from "./httpClient";
 import { JituCompletionProvider } from "./completionProvider";
 import { StatusBar } from "./statusBar";
 import { Logger } from "./logger";
+import { DiffRenderer } from "./diffRenderer";
 
 const COPILOT_EXTENSION_IDS = [
   "github.copilot",
@@ -40,12 +41,13 @@ export function activate(context: vscode.ExtensionContext) {
   const config = getConfig();
 
   const statusBar = new StatusBar();
+  const diffRenderer = new DiffRenderer();
   if (!config.enabled) {
     statusBar.setDisabled();
   }
 
   const client = new HttpCompletionClient(config.endpoint, config.apiKey, logger);
-  const provider = new JituCompletionProvider(client, statusBar);
+  const provider = new JituCompletionProvider(client, statusBar, diffRenderer);
 
   const providerDisposable = vscode.languages.registerInlineCompletionItemProvider(
     { pattern: "**" },
@@ -65,6 +67,24 @@ export function activate(context: vscode.ExtensionContext) {
     },
   );
 
+  const acceptDiffDisposable = vscode.commands.registerCommand(
+    "jitu.acceptDiff",
+    () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        return;
+      }
+      void diffRenderer.acceptDiff(editor);
+    },
+  );
+
+  const dismissDiffDisposable = vscode.commands.registerCommand(
+    "jitu.dismissDiff",
+    () => {
+      diffRenderer.clear();
+    },
+  );
+
   const configDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("jitu")) {
       const updated = getConfig();
@@ -73,6 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
         statusBar.setIdle();
       } else {
         statusBar.setDisabled();
+        diffRenderer.clear();
       }
     }
   });
@@ -81,7 +102,10 @@ export function activate(context: vscode.ExtensionContext) {
     providerDisposable,
     toggleDisposable,
     triggerDisposable,
+    acceptDiffDisposable,
+    dismissDiffDisposable,
     configDisposable,
+    diffRenderer,
     statusBar,
     logger,
     { dispose: () => provider.dispose() },

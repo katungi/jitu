@@ -1,15 +1,22 @@
-/**
- * Result of parsing a model response for edit prediction.
- *
- * `text` is the full replacement for the editable region.
- * `isEdit` is true when the model changed content outside the cursor point
- * (replacement or deletion), meaning we need to replace the full region
- * rather than just inserting at the cursor.
- */
-export interface EditPrediction {
+import { computeDiff, DiffResult } from "./diffEngine";
+
+export interface ParsedCompletionInsertion {
+  type: "insertion";
   text: string;
-  isEdit: boolean;
 }
+
+export interface ParsedCompletionEdit {
+  type: "edit";
+  newContent: string;
+  diffs: DiffResult[];
+  deletedLines: Array<{ line: number; text: string }>;
+  insertedLines: Array<{ line: number; text: string }>;
+}
+
+export type ParsedCompletion =
+  | { type: "none" }
+  | ParsedCompletionInsertion
+  | ParsedCompletionEdit;
 
 /**
  * Clean the raw model output by stripping the UPDATED marker
@@ -26,36 +33,30 @@ function cleanModelOutput(modelOutput: string): string {
 }
 
 /**
- * Extract an edit prediction from the model response.
- *
- * Compares the model's rewritten editable region against the original
- * to determine whether this is:
- * - An insertion (model only added new text at cursor)
- * - A replacement/deletion (model changed existing text in the region)
- *
- * Returns null if the model returned identical content (no change).
+ * Parse a model completion into one of:
+ * - insertion: model only inserted at cursor
+ * - edit: model replaced/deleted/inserted within editable region
+ * - none: no material change
  */
-export function extractEditPrediction(
+export function parseCompletion(
   modelOutput: string,
   originalEditableRegion: string,
-): EditPrediction | null {
+  editStartLine: number,
+): ParsedCompletion {
   const cursorMarker = "<|user_cursor|>";
   const cleaned = cleanModelOutput(modelOutput);
 
-  // Strip cursor marker from original for comparison
   const originalClean = originalEditableRegion
     .replace(cursorMarker, "")
     .trimEnd();
 
-  // No change
   if (cleaned === originalClean) {
-    return null;
+    return { type: "none" };
   }
 
   const cursorIdx = originalEditableRegion.indexOf(cursorMarker);
   if (cursorIdx === -1) {
-    // No cursor marker — treat entire output as a region replacement
-    return { text: cleaned, isEdit: true };
+    return buildEditCompletion(cleaned, originalClean, editStartLine);
   }
 
   const beforeCursor = originalEditableRegion.slice(0, cursorIdx);
@@ -63,25 +64,64 @@ export function extractEditPrediction(
     cursorIdx + cursorMarker.length,
   );
 
-  // Check if the model only inserted text at the cursor position
-  // (i.e. text before and after cursor is unchanged)
   if (cleaned.startsWith(beforeCursor)) {
     const modelAfterPrefix = cleaned.slice(beforeCursor.length);
     const afterTrimmed = afterCursor.trimEnd();
 
-    if (afterTrimmed.length > 0 && modelAfterPrefix.endsWith(afterTrimmed)) {
-      // Pure insertion at cursor
+    if (modelAfterPrefix.endsWith(afterTrimmed)) {
       const inserted = modelAfterPrefix.slice(
         0,
         modelAfterPrefix.length - afterTrimmed.length,
       );
       if (inserted) {
-        return { text: inserted, isEdit: false };
+        return { type: "insertion", text: inserted };
       }
-      return null;
+      return { type: "none" };
     }
   }
 
-  // Model changed content before/after cursor — full region replacement
-  return { text: cleaned, isEdit: true };
+  return buildEditCompletion(cleaned, originalClean, editStartLine);
+}
+
+function buildEditCompletion(
+  newContent: string,
+  originalContent: string,
+  editStartLine: number,
+): ParsedCompletionEdit {
+  const originalLines = splitLines(originalContent);
+  const newLines = splitLines(newContent);
+  const diffs = computeDiff(originalLines, newLines, editStartLine);
+
+  const deletedLines = diffs
+    .filter(
+      (d): d is DiffResult & { originalLine: number; originalText: string } =>
+        (d.type === "delete" || d.type === "replace") &&
+        d.originalLine !== undefined &&
+        d.originalText !== undefined,
+    )
+    .map((d) => ({ line: d.originalLine, text: d.originalText }));
+
+  const insertedLines = diffs
+    .filter(
+      (d): d is DiffResult & { originalLine: number; newText: string } =>
+        (d.type === "insert" || d.type === "replace") &&
+        d.originalLine !== undefined &&
+        d.newText !== undefined,
+    )
+    .map((d) => ({ line: d.originalLine, text: d.newText }));
+
+  return {
+    type: "edit",
+    newContent,
+    diffs,
+    deletedLines,
+    insertedLines,
+  };
+}
+
+function splitLines(text: string): string[] {
+  if (!text) {
+    return [];
+  }
+  return text.split("\n");
 }

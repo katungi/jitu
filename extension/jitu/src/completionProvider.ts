@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import { CompletionClient, CompletionOptions } from "./types";
 import { buildPrompt, buildPromptContext } from "./promptBuilder";
-import { extractEditPrediction } from "./responseParser";
+import { parseCompletion, ParsedCompletion } from "./responseParser";
 import { getConfig } from "./config";
 import { StatusBar } from "./statusBar";
+import { DiffRenderer } from "./diffRenderer";
 
 const SUPPORTED_LANGUAGES = new Set([
   "typescript",
@@ -15,6 +16,14 @@ const SUPPORTED_LANGUAGES = new Set([
   "rust",
 ]);
 
+type ActiveParsedCompletion = Exclude<ParsedCompletion, { type: "none" }>;
+
+function hasCompletion(
+  completion: ParsedCompletion,
+): completion is ActiveParsedCompletion {
+  return completion.type !== "none";
+}
+
 export class JituCompletionProvider
   implements vscode.InlineCompletionItemProvider
 {
@@ -25,6 +34,7 @@ export class JituCompletionProvider
   constructor(
     private client: CompletionClient,
     private statusBar: StatusBar,
+    private diffRenderer: DiffRenderer,
   ) {
     this.diagnosticsDisposable = vscode.languages.onDidChangeDiagnostics(
       (e) => {
@@ -73,10 +83,12 @@ export class JituCompletionProvider
     const config = getConfig();
 
     if (!config.enabled) {
+      this.diffRenderer.clear();
       return undefined;
     }
 
     if (!SUPPORTED_LANGUAGES.has(document.languageId)) {
+      this.diffRenderer.clear();
       return undefined;
     }
 
@@ -84,6 +96,7 @@ export class JituCompletionProvider
       const currentLine = document.lineAt(position.line).text.trim();
       const prevLine = document.lineAt(position.line - 1).text.trim();
       if (currentLine === "" && prevLine === "") {
+        this.diffRenderer.clear();
         return undefined;
       }
     }
@@ -98,6 +111,8 @@ export class JituCompletionProvider
     if (token.isCancellationRequested) {
       return undefined;
     }
+
+    this.diffRenderer.clear();
 
     const promptCtx = buildPromptContext(
       document,
@@ -128,19 +143,27 @@ export class JituCompletionProvider
 
       const predictions = rawResponses
         .map((rawResponse) =>
-          extractEditPrediction(rawResponse, promptCtx.editableRegion),
+          parseCompletion(
+            rawResponse,
+            promptCtx.editableRegion,
+            promptCtx.editStartLine,
+          ),
         )
-        .filter((prediction): prediction is NonNullable<typeof prediction> => Boolean(prediction));
+        .filter(hasCompletion);
 
       if (predictions.length === 0) {
+        this.diffRenderer.clear();
         return undefined;
       }
 
-      const uniquePredictions: Array<{ text: string; isEdit: boolean }> = [];
+      const uniquePredictions: ActiveParsedCompletion[] = [];
       const seen = new Set<string>();
 
       for (const prediction of predictions) {
-        const key = `${prediction.isEdit ? "edit" : "insert"}:${prediction.text}`;
+        const key =
+          prediction.type === "insertion"
+            ? `insert:${prediction.text}`
+            : `edit:${prediction.newContent}`;
         if (seen.has(key)) {
           continue;
         }
@@ -149,6 +172,7 @@ export class JituCompletionProvider
       }
 
       if (uniquePredictions.length === 0) {
+        this.diffRenderer.clear();
         return undefined;
       }
 
@@ -163,11 +187,42 @@ export class JituCompletionProvider
 
       const insertRange = new vscode.Range(position, position);
 
-      return uniquePredictions.map((prediction) => {
-        const range = prediction.isEdit ? editRange : insertRange;
-        return new vscode.InlineCompletionItem(prediction.text, range);
+      const completions = uniquePredictions.map((prediction) => {
+        if (prediction.type === "insertion") {
+          return new vscode.InlineCompletionItem(prediction.text, insertRange);
+        }
+        const completion = new vscode.InlineCompletionItem(
+          prediction.newContent,
+          editRange,
+        );
+        completion.command = {
+          command: "jitu.dismissDiff",
+          title: "Dismiss pending diff",
+        };
+        return completion;
       });
+
+      const firstPrediction = uniquePredictions[0];
+      const activeEditor = vscode.window.activeTextEditor;
+      if (
+        firstPrediction &&
+        firstPrediction.type === "edit" &&
+        activeEditor &&
+        activeEditor.document.uri.toString() === document.uri.toString()
+      ) {
+        this.diffRenderer.showDiff(activeEditor, {
+          documentUri: document.uri,
+          diffs: firstPrediction.diffs,
+          editRange,
+          newContent: firstPrediction.newContent,
+        });
+      } else {
+        this.diffRenderer.clear();
+      }
+
+      return completions;
     } catch (err: unknown) {
+      this.diffRenderer.clear();
       this.statusBar.setIdle();
       if (err instanceof Error && err.name === "AbortError") {
         return undefined;
